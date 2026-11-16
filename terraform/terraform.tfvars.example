@@ -1,0 +1,23 @@
+# Copie para terraform.tfvars e preencha. terraform.tfvars não deve ir para o git.
+subscription_id         = "00000000-0000-0000-0000-000000000000"
+location                = "brazilsouth"
+alert_email             = "seu-email@exemplo.com"
+mongo_connection_string = "mongodb+srv://usuario:senha@aprovia.xxxxx.mongodb.net/?appName=AprovIA"
+expo_access_token       = ""
+
+# VM da API Python
+ssh_public_key = "ssh-ed25519 AAAA... voce@maquina"
+admin_ip_cidr  = "203.0.113.10/32" # seu IP (curl ifconfig.me); vazio fecha o SSH
+vm_size        = "Standard_B2ms"
+cors_origins   = "https://aprovia.vercel.app,http://localhost:5173"
+admin_users    = "admin"
+
+# API Java (Container Apps)
+java_admin_password = "troque-esta-senha"
+java_min_replicas   = 1
+
+# PostgreSQL: true só durante a demonstração de alta disponibilidade (pago)
+postgres_high_availability = false
+
+# Orçamento mensal (USD): e-mail em 50% e 80% do gasto real e quando a previsão do mês passar de 100%
+budget_amount = 20

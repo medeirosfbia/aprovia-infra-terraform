@@ -1,0 +1,126 @@
+#cloud-config
+# Instala a API Python do AprovIA na VM criada pelo Terraform (substitui o antigo deploy_aprovia.sh)
+timezone: America/Sao_Paulo
+package_update: true
+packages:
+  - git
+  - curl
+  - gnupg
+  - build-essential
+  - python3-venv
+  - python3-dev
+  - libmagic1
+  - poppler-utils
+  - nginx
+  - certbot
+  - python3-certbot-nginx
+
+write_files:
+  - path: /etc/aprovia/api.env
+    permissions: "0640"
+    content: |
+%{ for nome, valor in api_env ~}
+      ${nome}='${valor}'
+%{ endfor ~}
+
+  - path: /etc/systemd/system/aprovia.service
+    content: |
+      [Unit]
+      Description=AprovIA API Python
+      After=network-online.target ollama.service
+      Wants=network-online.target
+
+      [Service]
+      User=aprovia
+      Group=aprovia
+      WorkingDirectory=/opt/aprovia/api
+      EnvironmentFile=/etc/aprovia/api.env
+      # 1 processo (ChromaDB local) com várias threads para o streaming do chat
+      ExecStart=/opt/aprovia/api/venv/bin/gunicorn --workers 1 --worker-class gthread --threads 16 --timeout 600 --bind 127.0.0.1:5000 app:app
+      Restart=always
+      RestartSec=3
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/nginx/sites-available/aprovia
+    content: |
+      server {
+          listen 80;
+          server_name ${domain};
+
+          location / {
+              proxy_pass http://127.0.0.1:5000;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+
+              proxy_http_version 1.1;
+              proxy_request_buffering off;
+              client_max_body_size 60M;
+
+              # Respostas do chat em streaming
+              proxy_buffering off;
+              proxy_cache off;
+              proxy_read_timeout 600s;
+              chunked_transfer_encoding on;
+          }
+      }
+
+  - path: /usr/local/bin/aprovia-backup-mongodb
+    permissions: "0755"
+    content: |
+      ${indent(6, backup_script)}
+
+  - path: /etc/cron.d/aprovia-backup
+    permissions: "0644"
+    content: |
+      0 23 * * * aprovia /usr/local/bin/aprovia-backup-mongodb >> /var/log/aprovia/backup.log 2>&1
+
+  - path: /usr/local/bin/aprovia-setup.sh
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euxo pipefail
+
+      useradd --system --home-dir /opt/aprovia --create-home --shell /usr/sbin/nologin aprovia || true
+      mkdir -p /var/log/aprovia
+
+      # Ollama (LLM local)
+      curl -fsSL https://ollama.com/install.sh | sh
+      systemctl enable --now ollama
+
+      # MongoDB Database Tools (mongodump do backup)
+      curl -fsSL https://pgp.mongodb.com/server-8.0.asc | gpg --dearmor -o /usr/share/keyrings/mongodb-server-8.0.gpg
+      echo "deb [ arch=amd64 signed-by=/usr/share/keyrings/mongodb-server-8.0.gpg ] https://repo.mongodb.org/apt/ubuntu noble/mongodb-org/8.0 multiverse" > /etc/apt/sources.list.d/mongodb-org-8.0.list
+      apt-get update
+      apt-get install -y mongodb-database-tools
+
+      # API Python
+      git clone --branch ${repo_branch} ${repo_url} /opt/aprovia/api
+      python3 -m venv /opt/aprovia/api/venv
+      /opt/aprovia/api/venv/bin/pip install --upgrade pip
+      /opt/aprovia/api/venv/bin/pip install -r /opt/aprovia/api/requirements.txt
+      mkdir -p /opt/aprovia/api/_temp
+      chown -R aprovia:aprovia /opt/aprovia /var/log/aprovia
+      chown root:aprovia /etc/aprovia/api.env
+      systemctl daemon-reload
+      systemctl enable --now aprovia
+
+      # nginx + HTTPS (Let's Encrypt no nome DNS da Azure)
+      rm -f /etc/nginx/sites-enabled/default
+      ln -sf /etc/nginx/sites-available/aprovia /etc/nginx/sites-enabled/aprovia
+      nginx -t
+      systemctl reload nginx
+      certbot --nginx -d ${domain} --non-interactive --agree-tos -m ${email} --redirect
+
+      # Modelos do Ollama por último: o download é grande e a API já responde enquanto isso.
+      # O CLI do Ollama exige HOME, que não existe no ambiente do cloud-init
+      export HOME=/root
+      for modelo in ${ollama_models}; do
+        ollama pull "$modelo"
+      done
+
+runcmd:
+  - [bash, /usr/local/bin/aprovia-setup.sh]
